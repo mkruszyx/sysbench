@@ -277,6 +277,11 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sysbenchConfig.cmake
               ${CMAKE_CURRENT_BINARY_DIR}/sysbenchConfigVersion.cmake
         DESTINATION share/sysbench/cmake)
 if(WIN32)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/packaging/install-sysbench.ps1 
+                ${CMAKE_CURRENT_BINARY_DIR}/packaging/install-sysbench.bat 
+          DESTINATION .)
+endif()
+if(WIN32)
   # A more reasonable choice of default package on Windows than NSIS
   set(CPACK_GENERATOR ZIP)
 endif()
