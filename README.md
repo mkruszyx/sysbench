@@ -21,5 +21,5 @@ As of sysbench 1.1.0, support for building with CMake was added on all supported
 ### Install
 Unpack zip package and execute bat/ps1 script
 ```shell
-   tar -xf "sysbench-1.1.0-win64.zip" -C "%CD%\sysbench_extract" && for /f "delims=" %F in ('dir /b /s "%CD%\sysbench_extract\install-sysbench.bat"') do call "%F"
+   if not exist "%CD%\sysbench_extract" mkdir "%CD%\sysbench_extract" && tar -xf "sysbench-1.1.0-win64.zip" -C "%CD%\sysbench_extract" && for /f "delims=" %F in ('dir /b /s "%CD%\sysbench_extract\install-sysbench.bat"') do call "%F"
 ```
