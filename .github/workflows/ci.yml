@@ -11,7 +11,7 @@ jobs:
     name: Build on ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Autogen
         run: ./autogen.sh
       - name: Configure
@@ -37,7 +37,7 @@ jobs:
       - name: Setup MariaDB Libs
         run: sudo apt install libmariadb-dev libmariadb-dev-compat
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Autogen
         run: ./autogen.sh
       - name: Configure

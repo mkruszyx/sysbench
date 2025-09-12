@@ -14,12 +14,12 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
 
       # On Windows, use vcpkg to build, as pgsql driver on build box is bad (crashes during tests)
       - name: vcpkg_cache(Windows)
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         if: runner.os == 'Windows'
         id: vcpkg_cache
         with:
@@ -67,7 +67,7 @@ jobs:
 
       - name: upload package(Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.os }}-package
           path: ./*.zip
@@ -77,7 +77,7 @@ jobs:
           cmake --install . --config Release --prefix install_dir
 
       - name: Archive build
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-${{ inputs.os }}
           retention-days: 1
@@ -91,7 +91,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: install ninja (macOS)
         if: runner.os == 'macOS'
         run : |
@@ -114,7 +114,7 @@ jobs:
           cmake -S . -B build -GNinja -DCMAKE_COMPILE_WARNING_AS_ERROR=1 -DCMAKE_BUILD_TYPE=Debug -DWITH_PGSQL=1 -DCMAKE_C_COMPILER=${{ runner.os == 'Linux' && 'clang' || 'gcc' }}
           cmake --build build
 
-      - uses: seanmiddleditch/gha-setup-vsdevenv@master
+      - uses: seanmiddleditch/gha-setup-vsdevenv@v5
         if: runner.os == 'Windows'
 
       - name: build with clang-cl
@@ -133,7 +133,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: install client libs (macOS)
         if: runner.os == 'macOS'
         run : |
@@ -193,7 +193,7 @@ jobs:
 
     steps:
       - name: Download build
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
         with:
           name: build-${{ inputs.os }}
 
@@ -225,7 +225,7 @@ jobs:
 
       - name: actions-setup-pgsql
         if: matrix.db =='postgres'
-        uses: ikalnytskyi/action-setup-postgres@v4
+        uses: ikalnytskyi/action-setup-postgres@v7
         with:
           username: sbtest
           password: sbtest
