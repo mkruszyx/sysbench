@@ -25,7 +25,7 @@ function init()
 end
 
 if sysbench.cmdline.command == nil then
-   error("Command is required. Supported commands: prepare, prewarm, run, " ..
+   error("Command is required. Supported commands: prepare, warmup, run, " ..
             "cleanup, help")
 end
 
@@ -59,6 +59,8 @@ sysbench.cmdline.options = {
    {"Use AUTO_INCREMENT column as Primary Key (for MySQL), " ..
        "or its alternatives in other DBMS. When disabled, use " ..
        "client-generated IDs", true},
+   create_table_options =
+      {"Extra CREATE TABLE options", ""},
    skip_trx =
       {"Don't start explicit transactions and execute all queries " ..
           "in the AUTOCOMMIT mode", false},
@@ -66,6 +68,9 @@ sysbench.cmdline.options = {
       {"Use a secondary index in place of the PRIMARY KEY", false},
    create_secondary =
       {"Create a secondary index in addition to the PRIMARY KEY", true},
+   reconnect =
+      {"Reconnect after every N events. The default (0) is to not reconnect",
+       0},
    mysql_storage_engine =
       {"Storage engine, if MySQL is used", "innodb"},
    pgsql_variant =
@@ -93,11 +98,11 @@ end
 -- --tables > 1
 --
 -- PS. Currently, this command is only meaningful for MySQL/InnoDB benchmarks
-function cmd_prewarm()
+function cmd_warmup()
    local drv = sysbench.sql.driver()
    local con = drv:connect()
 
-   assert(drv:name() == "mysql", "prewarm is currently MySQL only")
+   assert(drv:name() == "mysql", "warmup is currently MySQL only")
 
    -- Do not create on disk tables for subsequent queries
    con:query("SET tmp_table_size=2*1024*1024*1024")
@@ -106,7 +111,7 @@ function cmd_prewarm()
    for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.tables,
    sysbench.opt.threads do
       local t = "sbtest" .. i
-      print("Prewarming table " .. t)
+      print("Preloading table " .. t)
       con:query("ANALYZE TABLE sbtest" .. i)
       con:query(string.format(
                    "SELECT AVG(id) FROM " ..
@@ -120,10 +125,12 @@ function cmd_prewarm()
    end
 end
 
--- Implement parallel prepare and prewarm commands
+-- Implement parallel prepare and warmup commands, define 'prewarm' as an alias
+-- for 'warmup'
 sysbench.cmdline.commands = {
    prepare = {cmd_prepare, sysbench.cmdline.PARALLEL_COMMAND},
-   prewarm = {cmd_prewarm, sysbench.cmdline.PARALLEL_COMMAND}
+   warmup = {cmd_warmup, sysbench.cmdline.PARALLEL_COMMAND},
+   prewarm = {cmd_warmup, sysbench.cmdline.PARALLEL_COMMAND}
 }
 
 
@@ -159,8 +166,7 @@ function create_table(drv, con, table_num)
      id_index_def = "PRIMARY KEY"
    end
 
-   if drv:name() == "mysql" or drv:name() == "attachsql" or
-      drv:name() == "drizzle"
+   if drv:name() == "mysql"
    then
       if sysbench.opt.auto_inc then
          id_def = "INTEGER NOT NULL AUTO_INCREMENT"
@@ -168,7 +174,6 @@ function create_table(drv, con, table_num)
          id_def = "INTEGER NOT NULL"
       end
       engine_def = "/*! ENGINE = " .. sysbench.opt.mysql_storage_engine .. " */"
-      extra_table_options = mysql_table_options or ""
    elseif drv:name() == "pgsql"
    then
       if not sysbench.opt.auto_inc then
@@ -192,7 +197,8 @@ CREATE TABLE sbtest%d(
   pad CHAR(60) DEFAULT '' NOT NULL,
   %s (id)
 ) %s %s]],
-      table_num, id_def, id_index_def, engine_def, extra_table_options)
+      table_num, id_def, id_index_def, engine_def,
+      sysbench.opt.create_table_options)
 
    con:query(query)
 
@@ -219,12 +225,13 @@ CREATE TABLE sbtest%d(
 
       if (sysbench.opt.auto_inc) then
          query = string.format("(%d, '%s', '%s')",
-                               sb_rand(1, sysbench.opt.table_size), c_val,
-                               pad_val)
+                               sysbench.rand.default(1, sysbench.opt.table_size),
+                               c_val, pad_val)
       else
          query = string.format("(%d, %d, '%s', '%s')",
-                               i, sb_rand(1, sysbench.opt.table_size), c_val,
-                               pad_val)
+                               i,
+                               sysbench.rand.default(1, sysbench.opt.table_size),
+                               c_val, pad_val)
       end
 
       con:bulk_insert_next(query)
@@ -499,5 +506,16 @@ function sysbench.hooks.before_restart_event(errdesc)
    then
       close_statements()
       prepare_statements()
+   end
+end
+
+function check_reconnect()
+   if sysbench.opt.reconnect > 0 then
+      transactions = (transactions or 0) + 1
+      if transactions % sysbench.opt.reconnect == 0 then
+         close_statements()
+         con:reconnect()
+         prepare_statements()
+      end
    end
 end

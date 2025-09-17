@@ -118,14 +118,14 @@ oltp_read_write.lua + MySQL tests
   ERROR 1146 (42S02) at line 1: Table 'sbtest.sbtest9' doesn't exist
   sysbench * (glob)
   
-  Prewarming table sbtest1
-  Prewarming table sbtest2
-  Prewarming table sbtest3
-  Prewarming table sbtest4
-  Prewarming table sbtest5
-  Prewarming table sbtest6
-  Prewarming table sbtest7
-  Prewarming table sbtest8
+  Preloading table sbtest1
+  Preloading table sbtest2
+  Preloading table sbtest3
+  Preloading table sbtest4
+  Preloading table sbtest5
+  Preloading table sbtest6
+  Preloading table sbtest7
+  Preloading table sbtest8
   sysbench *.* * (glob)
   
   Dropping table 'sbtest1'...
@@ -239,8 +239,9 @@ oltp_read_write.lua + MySQL tests
       ignored errors:                      0      (* per sec.) (glob)
       reconnects:                          0      (* per sec.) (glob)
   
-  General statistics:
-      total time:                          *s (glob)
+  Throughput:
+      events/s (eps): *.* (glob)
+      time elapsed:                        *s (glob)
       total number of events:              100
   
   Latency (ms):
@@ -284,6 +285,9 @@ oltp_read_write.lua + MySQL tests
   Inserting 10000 records into 'sbtest1'
   Creating a secondary index on 'sbtest1'...
   Dropping table 'sbtest1'...
+  # Test --reconnect
+      reconnects:                          20     (* per sec.) (glob)
+
 
   $ DB_DRIVER_ARGS="--db-driver=mysql --mysql-storage-engine=innodb $SBTEST_MYSQL_ARGS"
   $ . $SBTEST_INCDIR/script_oltp_common.sh
@@ -396,14 +400,14 @@ oltp_read_write.lua + MySQL tests
   ERROR 1146 (42S02) at line 1: Table 'sbtest.sbtest9' doesn't exist
   sysbench * (glob)
   
-  Prewarming table sbtest1
-  Prewarming table sbtest2
-  Prewarming table sbtest3
-  Prewarming table sbtest4
-  Prewarming table sbtest5
-  Prewarming table sbtest6
-  Prewarming table sbtest7
-  Prewarming table sbtest8
+  Preloading table sbtest1
+  Preloading table sbtest2
+  Preloading table sbtest3
+  Preloading table sbtest4
+  Preloading table sbtest5
+  Preloading table sbtest6
+  Preloading table sbtest7
+  Preloading table sbtest8
   sysbench *.* * (glob)
   
   Dropping table 'sbtest1'...
@@ -517,8 +521,9 @@ oltp_read_write.lua + MySQL tests
       ignored errors:                      0      (* per sec.) (glob)
       reconnects:                          0      (* per sec.) (glob)
   
-  General statistics:
-      total time:                          *s (glob)
+  Throughput:
+      events/s (eps): *.* (glob)
+      time elapsed:                        *s (glob)
       total number of events:              100
   
   Latency (ms):
@@ -562,3 +567,5 @@ oltp_read_write.lua + MySQL tests
   Inserting 10000 records into 'sbtest1'
   Creating a secondary index on 'sbtest1'...
   Dropping table 'sbtest1'...
+  # Test --reconnect
+      reconnects:                          20     (* per sec.) (glob)

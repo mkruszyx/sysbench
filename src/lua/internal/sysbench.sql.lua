@@ -56,7 +56,7 @@ typedef struct
   sql_value       *values;     /* Array of column values */
 } sql_row;
 
-/* Query type for statistics */
+/* Statistic counter types */
 
 typedef enum
 {
@@ -66,6 +66,8 @@ typedef enum
   SB_CNT_TRX,
   SB_CNT_ERROR,
   SB_CNT_RECONNECT,
+  SB_CNT_BYTES_READ,
+  SB_CNT_BYTES_WRITTEN,
   SB_CNT_MAX
 } sb_counter_type;
 
@@ -145,8 +147,11 @@ sql_statement *db_prepare(sql_connection *con, const char *query, size_t len);
 int db_bind_param(sql_statement *stmt, sql_bind *params, size_t len);
 int db_bind_result(sql_statement *stmt, sql_bind *results, size_t len);
 sql_result *db_execute(sql_statement *stmt);
+sql_result *db_stmt_next_result(sql_statement *stmt);
 int db_close(sql_statement *stmt);
 
+bool db_more_results(sql_connection *con);
+sql_result *db_next_result(sql_connection *con);
 int db_free_results(sql_result *);
 ]]
 
@@ -270,6 +275,15 @@ function connection_methods.query(self, query)
    return self:check_error(rs, query)
 end
 
+function connection_methods.more_results(self)
+   return ffi.C.db_more_results(self)
+end
+
+function connection_methods.next_result(self)
+   local rs = ffi.C.db_next_result(self)
+   return self:check_error(rs, "");
+end
+
 function connection_methods.bulk_insert_init(self, query)
    return assert(ffi.C.db_bulk_insert_init(self, query, #query) == 0,
                  "db_bulk_insert_init() failed")
@@ -330,13 +344,11 @@ function sql_param.set(self, value)
    if btype == sql_type.TINYINT or
       btype == sql_type.SMALLINT or
       btype == sql_type.INT or
-      btype == sql_type.BIGINT
-   then
-      self.buffer[0] = value
-   elseif btype == sql_type.FLOAT or
+      btype == sql_type.BIGINT or
+      btype == sql_type.FLOAT or
       btype == sql_type.DOUBLE
    then
-      self.buffer[1] = value
+      self.buffer[0] = value
    elseif btype == sql_type.CHAR or
       btype == sql_type.VARCHAR
    then
@@ -414,8 +426,6 @@ function statement_methods.bind_param(self, ...)
 
    local binds = ffi.new("sql_bind[?]", len)
 
-   local i, param
-
    for i, param in ipairs({...}) do
       binds[i-1].type = param.type
       binds[i-1].buffer = param.buffer
@@ -428,6 +438,11 @@ end
 
 function statement_methods.execute(self)
    local rs = ffi.C.db_execute(self)
+   return self.connection:check_error(rs, '<prepared statement>')
+end
+
+function statement_methods.next_result(self)
+   local rs = ffi.C.db_stmt_next_result(self)
    return self.connection:check_error(rs, '<prepared statement>')
 end
 
@@ -463,7 +478,6 @@ function result_methods.fetch_row(self)
       return nil
    end
 
-   local i
    for i = 0, self.nfields-1 do
       if row.values[i].ptr ~= nil then -- not a NULL value
          res[i+1] = ffi.string(row.values[i].ptr, tonumber(row.values[i].len))

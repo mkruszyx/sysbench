@@ -1,9 +1,10 @@
 [![Latest Release][release-badge]][release-url]
-[![Build Status][travis-badge]][travis-url]
+[![Build Status][action-badge]][action-url]
 [![Debian Packages][deb-badge]][deb-url]
 [![RPM Packages][rpm-badge]][rpm-url]
 [![Coverage Status][coveralls-badge]][coveralls-url]
 [![License][license-badge]][license-url]
+
 
 <!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-generate-toc again -->
 **Table of Contents**
@@ -13,7 +14,6 @@
 - [Installing from Binary Packages](#installing-from-binary-packages)
     - [Linux](#linux)
     - [macOS](#macos)
-    - [Windows](#windows)
 - [Building and Installing From Source](#building-and-installing-from-source)
     - [Build Requirements](#build-requirements)
         - [Windows](#windows)
@@ -22,9 +22,12 @@
         - [Fedora](#fedora)
         - [macOS](#macos)
     - [Build and Install](#build-and-install)
+        - [Using CMake](#using-cmake)
+        - [Using autotools](#using-autotools)
 - [Usage](#usage)
     - [General Syntax](#general-syntax)
     - [General Command Line Options](#general-command-line-options)
+    - [Random Numbers Options](#random-numbers-options)
 - [Versioning](#versioning)
 
 <!-- markdown-toc end -->
@@ -90,6 +93,11 @@ Quick install instructions:
   sudo dnf -y install sysbench
   ```
 
+- Arch Linux:
+  ``` shell
+  sudo pacman -Suy sysbench
+  ```
+
 ## macOS
 
 On macOS, up-to-date sysbench packages are available from Homebrew:
@@ -97,18 +105,6 @@ On macOS, up-to-date sysbench packages are available from Homebrew:
 # Add --with-postgresql if you need PostgreSQL support
 brew install sysbench
 ```
-
-## Windows
-As of sysbench 1.0 support for native Windows builds was dropped. It may
-be re-introduced in later releases. Currently, the recommended way to
-obtain sysbench on Windows is
-using
-[Windows Subsystem for Linux available in Windows 10](https://msdn.microsoft.com/en-us/commandline/wsl/about).
-
-After installing WSL and getting into he bash prompt on Windows
-following Debian/Ubuntu installation instructions is
-sufficient. Alternatively, one can use WSL to build and install sysbench
-from source, or use an older sysbench release to build a native binary.
 
 # Building and Installing From Source
 
@@ -121,15 +117,12 @@ architecture for which no binary packages are available.
 ## Build Requirements
 
 ### Windows
-As of sysbench 1.0 support for native Windows builds was
-dropped. It may be re-introduced in later versions. Currently, the
-recommended way to build sysbench on Windows is using
-[Windows Subsystem for Linux available in Windows 10](https://msdn.microsoft.com/en-us/commandline/wsl/about).
 
-After installing WSL and getting into bash prompt on Windows, following
-Debian/Ubuntu build instructions is sufficient. Alternatively, one can
-build and use an older 0.5 release on Windows.
-
+If you want to build with postgresql, recommended way to do that
+is to install *libpq* via vcpkg dependency manager like this:
+``` shell
+    vcpkg install libpq
+```
 ### Debian/Ubuntu
 ``` shell
     apt -y install make automake libtool pkg-config libaio-dev
@@ -159,7 +152,7 @@ build and use an older 0.5 release on Windows.
 
 ### macOS
 
-Assuming you have Xcode (or Xcode Commane Line Tools) and Homebrew installed:
+Assuming you have Xcode (or Xcode Command Line Tools) and Homebrew installed:
 ``` shell
     brew install automake libtool openssl pkg-config
     # For MySQL support
@@ -171,6 +164,21 @@ Assuming you have Xcode (or Xcode Commane Line Tools) and Homebrew installed:
 ```
 
 ## Build and Install
+As of sysbench 1.1.0, support for building with CMake was added on all supported platforms.
+### Using CMake
+```shell
+   # add -DWITH_PGSQL=ON to build with PostgreSQL support
+   cmake .
+   cmake --build . -j --config Release
+   cmake --install .
+```
+On Windows, cmake will build sysbench on Windows with MySQL support via libmariadb
+external project. That means, there is no needs to install the client drivers, but you
+will need Git and internet access at the build time.
+If this is not desired, pass -DWITH_LIBMARIADB=OFF to cmake command line
+
+To build without MySQL support, pass -DWITH_MYSQL=OFF
+### Using autotools
 ``` shell
     ./autogen.sh
     # Add --with-pgsql to build with PostgreSQL support
@@ -188,9 +196,6 @@ to `./configure`.
 To compile sysbench without MySQL support, use `--without-mysql`. If no
 database drivers are available database-related scripts will not work,
 but other benchmarks will be functional.
-
-See [README-Oracle.md](README-Oracle.md) for instructions on building
-with Oracle client libraries.
 
 # Usage
 
@@ -249,16 +254,33 @@ The table below lists the supported common options, their descriptions and defau
 | `--threads`           | The total number of worker threads to create                                                                                                                                                                                                                                                                                                                                                                                                                            | 1               |
 | `--events`            | Limit for total number of requests. 0 (the default) means no limit                                                                                                                                                                                                                                                                                                                                                                                                      | 0               |
 | `--time`              | Limit for total execution time in seconds. 0 means no limit                                                                                                                                                                                                                                                                                                                                                                                                             | 10              |
+| `--warmup-time`       | Execute events for this many seconds with statistics disabled before the actual benchmark run with statistics enabled. This is useful when you want to exclude the initial period of a benchmark run from statistics. In many benchmarks, the initial period is not representative because CPU/database/page and other caches need some time to warm up                                                                                                                                                                                                                                                                                                  | 0               |
 | `--rate`              | Average transactions rate. The number specifies how many events (transactions) per seconds should be executed by all threads on average. 0 (default) means unlimited rate, i.e. events are executed as fast as possible                                                                                                                                                                                                                                                                 | 0               |
+| `--thread-init-timeout` | Wait time in seconds for worker threads to initialize                                                                                                                                                                                                                                                                                                                                                                                                                  | 30              |
 | `--thread-stack-size` | Size of stack for each thread                                                                                                                                                                                                                                                                                                                                                                                                                                           | 32K             |
 | `--report-interval`   | Periodically report intermediate statistics with a specified interval in seconds. Note that statistics produced by this option is per-interval rather than cumulative. 0 disables intermediate reports                                                                                                                                                                                                                                                                  | 0               |
 | `--debug`             | Print more debug info                                                                                                                                                                                                                                                                                                                                                                                                                                                   | off             |
 | `--validate`          | Perform validation of test results where possible                                                                                                                                                                                                                                                                                                                                                                                                                       | off             |
-| `--help`              | Print help on general syntax or on a test mode specified with --test, and exit                                                                                                                                                                                                                                                                                                                                                                                          | off             |
+| `--help`              | Print help on general syntax or on a specified test, and exit                                                                                                                                                                                                                                                                                                                                                                                                           | off             |
 | `--verbosity`         | Verbosity level (0 - only critical messages, 5 - debug)                                                                                                                                                                                                                                                                                                                                                                                                                 | 4               |
 | `--percentile`        | sysbench measures execution times for all processed requests to display statistical information like minimal, average and maximum execution time. For most benchmarks it is also useful to know a request execution time value matching some percentile (e.g. 95% percentile means we should drop 5% of the most long requests and choose the maximal value from the remaining ones). This option allows to specify a percentile rank of query execution times to count | 95              |
+| `--luajit-cmd`        | perform a LuaJIT control command. This option is equivalent to `luajit -j`. See [LuaJIT documentation](http://luajit.org/running.html#opt_j) for more information                                                                                                                                                                                                                                                                                                       |               |
 
 Note that numerical values for all *size* options (like `--thread-stack-size` in this table) may be specified by appending the corresponding multiplicative suffix (K for kilobytes, M for megabytes, G for gigabytes and T for terabytes).
+
+## Random Numbers Options
+
+sysbench provides a number of algorithms to generate random numbers that are distributed according to a given probability distribution. The table below lists options that can be used to control those algorithms.
+
+*Option*              | *Description* | *Default value*
+----------------------|---------------|----------------
+`--rand-type` | random numbers distribution {uniform, gaussian, special, pareto, zipfian} to use by default. Benchmark scripts may choose to use either the default distribution, or specify it explictly, i.e. override the default. | special
+`--rand-seed` | seed for random number generator. When 0, the current time is used as an RNG seed. | 0
+`--rand-spec-iter` | number of iterations for the special distribution | 12
+`--rand-spec-pct` | percentage of the entire range where 'special' values will fall in the special distribution | 1
+`--rand-spec-res` | percentage of 'special' values to use for the special distribution | 75
+`--rand-pareto-h` | shape parameter for the Pareto distribution | 0.2
+`--rand-zipfian-exp` | shape parameter (theta) for the Zipfian distribution | 0.8
 
 # Versioning
 
@@ -276,10 +298,10 @@ And constructed with the following guidelines:
 
 For more information on SemVer, please visit [http://semver.org/](http://semver.org/).
 
-[coveralls-badge]: https://coveralls.io/repos/github/akopytov/sysbench/badge.svg?branch=1.0
-[coveralls-url]: https://coveralls.io/github/akopytov/sysbench?branch=1.0
-[travis-badge]: https://travis-ci.org/akopytov/sysbench.svg?branch=1.0
-[travis-url]: https://travis-ci.org/akopytov/sysbench?branch=1.0
+[coveralls-badge]: https://coveralls.io/repos/github/akopytov/sysbench/badge.svg?branch=master
+[coveralls-url]: https://coveralls.io/github/akopytov/sysbench?branch=master
+[action-url]: https://github.com/akopytov/sysbench/actions/workflows/ci.yml
+[action-badge]: https://github.com/akopytov/sysbench/actions/workflows/ci.yml/badge.svg
 [license-badge]: https://img.shields.io/badge/license-GPLv2-blue.svg
 [license-url]: COPYING
 [release-badge]: https://img.shields.io/github/release/akopytov/sysbench.svg

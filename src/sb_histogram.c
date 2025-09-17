@@ -1,4 +1,4 @@
-/* Copyright (C) 2011-2017 Alexey Kopytov.
+/* Copyright (C) 2011-2018 Alexey Kopytov.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,9 +17,6 @@
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
-#endif
-#ifdef _WIN32
-#include "sb_win.h"
 #endif
 
 #ifdef STDC_HEADERS
@@ -43,6 +40,14 @@
 
 #include "sb_util.h"
 
+#ifdef _MSC_VER
+/*
+  Allow floor() to be converted to an integer without an explicit cast
+  (the case causes GCC bad-cast warning)
+*/
+#pragma warning(push)
+#pragma warning(disable : 4244)
+#endif
 
 /*
    Number of slots for current histogram array. TODO: replace this constant with
@@ -51,7 +56,7 @@
 #define SB_HISTOGRAM_NSLOTS 128
 
 /* Global latency histogram */
-sb_histogram_t sb_latency_histogram CK_CC_CACHELINE;
+CK_CC_CACHELINE sb_histogram_t sb_latency_histogram;
 
 
 int sb_histogram_init(sb_histogram_t *h, size_t size,
@@ -371,3 +376,8 @@ void sb_histogram_delete(sb_histogram_t *h)
   sb_histogram_done(h);
   free(h);
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+

@@ -48,8 +48,9 @@ select_random_*.lua + MySQL tests
       ignored errors:                      0      (0.00 per sec.)
       reconnects:                          0      (0.00 per sec.)
   
-  General statistics:
-      total time:                          *s (glob)
+  Throughput:
+      events/s (eps): *.* (glob)
+      time elapsed:                        *s (glob)
       total number of events:              100
   
   Latency (ms):
@@ -118,8 +119,9 @@ select_random_*.lua + MySQL tests
       ignored errors:                      0      (0.00 per sec.)
       reconnects:                          0      (0.00 per sec.)
   
-  General statistics:
-      total time:                          *s (glob)
+  Throughput:
+      events/s (eps): *.* (glob)
+      time elapsed:                        *s (glob)
       total number of events:              100
   
   Latency (ms):

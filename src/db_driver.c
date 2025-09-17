@@ -1,6 +1,6 @@
 /*
    Copyright (C) 2004 MySQL AB
-   Copyright (C) 2004-2017 Alexey Kopytov <akopytov@gmail.com>
+   Copyright (C) 2004-2018 Alexey Kopytov <akopytov@gmail.com>
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,9 +19,6 @@
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
-#endif
-#ifdef _WIN32
-#include "sb_win.h"
 #endif
 #ifdef STDC_HEADERS
 # include <ctype.h>
@@ -49,7 +46,7 @@
 #define ROWS_BEFORE_COMMIT 1000
 
 /* Global variables */
-db_globals_t db_globals CK_CC_CACHELINE;
+CK_CC_CACHELINE db_globals_t db_globals;
 
 static sb_list_t        drivers;          /* list of available DB drivers */
 
@@ -73,17 +70,17 @@ static void db_reset_stats(void);
 static int db_free_results_int(db_conn_t *con);
 
 /* DB layer arguments */
+#ifdef USE_MYSQL
+#define DEFAULT_DB_DRIVER "mysql"
+#else
+#define DEFAULT_DB_DRIVER NULL
+#endif
 
 static sb_arg_t db_args[] =
 {
   SB_OPT("db-driver", "specifies database driver to use "
          "('help' to get list of available drivers)",
-#ifdef USE_MYSQL
-         "mysql",
-#else
-         NULL,
-#endif
-         STRING),
+         DEFAULT_DB_DRIVER, STRING),
   SB_OPT("db-ps-mode", "prepared statements usage mode {auto, disable}", "auto",
          STRING),
   SB_OPT("db-debug", "print database-specific debug information", "off", BOOL),
@@ -102,18 +99,6 @@ int db_register(void)
   SB_LIST_INIT(&drivers);
 #ifdef USE_MYSQL
   register_driver_mysql(&drivers);
-#endif
-#ifdef USE_DRIZZLE
-  register_driver_drizzle(&drivers);
-#endif
-#ifdef USE_ATTACHSQL
-  register_driver_attachsql(&drivers);
-#endif
-#ifdef USE_DRIZZLECLIENT
-  register_driver_drizzleclient(&drivers);
-#endif
-#ifdef USE_ORACLE
-  register_driver_oracle(&drivers);
 #endif
 #ifdef USE_PGSQL
   register_driver_pgsql(&drivers);
@@ -519,6 +504,52 @@ db_result_t *db_execute(db_stmt_t *stmt)
   return NULL;
 }
 
+/* Retrieve the next result of a prepared statement */
+
+db_result_t *db_stmt_next_result(db_stmt_t *stmt)
+{
+  db_conn_t       *con = stmt->connection;
+  db_result_t     *rs = &con->rs;
+  int             rc;
+
+  if (con->state == DB_CONN_INVALID)
+  {
+    log_text(LOG_ALERT, "attempt to use an already closed connection");
+    return NULL;
+  }
+  else if (con->state == DB_CONN_RESULT_SET &&
+           (rc = db_free_results_int(con)) != 0)
+  {
+    return NULL;
+  }
+
+  rs->statement = stmt;
+
+  if (con->driver->ops.stmt_next_result == NULL)
+  {
+    con->error = DB_ERROR_NONE;
+    return NULL;
+  }
+
+  con->error = con->driver->ops.stmt_next_result(stmt, rs);
+
+  sb_counter_inc(con->thread_id, rs->counter);
+
+  if (SB_LIKELY(con->error == DB_ERROR_NONE))
+  {
+    if (rs->counter == SB_CNT_READ)
+    {
+      con->state = DB_CONN_RESULT_SET;
+      return rs;
+    }
+    con->state = DB_CONN_READY;
+
+    return NULL;
+  }
+
+  return NULL;
+}
+
 
 /* Fetch row from result set of a query */
 
@@ -541,6 +572,7 @@ db_row_t *db_fetch_row(db_result_t *rs)
   if (con->driver->ops.fetch_row == NULL)
   {
     log_text(LOG_ALERT, "fetching rows is not supported by the driver");
+    return NULL;
   }
 
   if (rs->nrows == 0 || rs->nfields == 0)
@@ -603,6 +635,66 @@ db_result_t *db_query(db_conn_t *con, const char *query, size_t len)
   return NULL;
 }
 
+/* Check if more result sets are available */
+
+bool db_more_results(db_conn_t *con)
+{
+  if (con->state == DB_CONN_INVALID)
+  {
+    log_text(LOG_ALERT, "attempt to use an already closed connection");
+    return false;
+  }
+
+  if (con->state != DB_CONN_RESULT_SET ||
+      con->driver->ops.more_results == NULL ||
+      con->driver->ops.more_results(con) == false)
+    return false;
+
+  return true;
+}
+
+/* Retrieve the next result set */
+
+db_result_t *db_next_result(db_conn_t *con)
+{
+  db_result_t *rs = &con->rs;
+  int         rc;
+
+  if (con->state == DB_CONN_INVALID)
+  {
+    log_text(LOG_ALERT, "attempt to use an already closed connection");
+    con->error = DB_ERROR_FATAL;
+    return NULL;
+  }
+  else if (con->state == DB_CONN_RESULT_SET &&
+           (rc = db_free_results_int(con)) != 0)
+  {
+    con->error = DB_ERROR_FATAL;
+    return NULL;
+  }
+
+  if (con->driver->ops.next_result == NULL)
+  {
+    con->error = DB_ERROR_NONE;
+    return NULL;
+  }
+
+  con->error = con->driver->ops.next_result(con, rs);
+
+  sb_counter_inc(con->thread_id, rs->counter);
+
+  if (SB_LIKELY(con->error == DB_ERROR_NONE))
+  {
+    if (rs->counter == SB_CNT_READ)
+    {
+      con->state = DB_CONN_RESULT_SET;
+      return rs;
+    }
+    con->state = DB_CONN_READY;
+  }
+
+  return NULL;
+}
 
 /* Free result set */
 
@@ -708,8 +800,8 @@ void db_done(void)
 
   if (db_globals.debug)
   {
-    free(exec_timers);
-    free(fetch_timers);
+    sb_free_memaligned(exec_timers);
+    sb_free_memaligned(fetch_timers);
 
     exec_timers = fetch_timers = NULL;
   }
@@ -868,8 +960,8 @@ int db_bulk_insert_init(db_conn_t *con, const char *query, size_t query_len)
   con->bulk_commit_max = driver_caps.needs_commit ? ROWS_BEFORE_COMMIT : 0;
   con->bulk_commit_cnt = 0;
   strcpy(con->bulk_buffer, query);
-  con->bulk_ptr = query_len;
-  con->bulk_values = query_len;
+  con->bulk_ptr = (unsigned int)query_len;
+  con->bulk_values = (unsigned int)query_len;
   con->bulk_cnt = 0;
 
   return 0;
@@ -923,7 +1015,7 @@ int db_bulk_insert_next(db_conn_t *con, const char *query, size_t query_len)
   }
   else
     strcpy(con->bulk_buffer + con->bulk_ptr, query);
-  con->bulk_ptr += query_len + (con->bulk_cnt > 0);
+  con->bulk_ptr += (unsigned int)query_len + (con->bulk_cnt > 0);
 
   con->bulk_cnt++;
 

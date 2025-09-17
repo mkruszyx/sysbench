@@ -82,9 +82,6 @@
 /* Maximum queue length for the tx-rate mode. Must be a power of 2 */
 #define MAX_QUEUE_LEN 131072
 
-/* Wait at most this number of seconds for worker threads to initialize */
-#define THREAD_INIT_TIMEOUT 30
-
 /*
   Extra thread ID assigned to background threads. This may be used as an index
   into per-thread arrays (see comment in sb_alloc_per_thread_array().
@@ -97,10 +94,14 @@ sb_arg_t general_args[] =
   SB_OPT("threads", "number of threads to use", "1", INT),
   SB_OPT("events", "limit for total number of events", "0", INT),
   SB_OPT("time", "limit for total execution time in seconds", "10", INT),
+  SB_OPT("warmup-time", "execute events for this many seconds with statistics "
+         "disabled before the actual benchmark run with statistics enabled",
+         "0", INT),
   SB_OPT("forced-shutdown",
          "number of seconds to wait after the --time limit before forcing "
          "shutdown, or 'off' to disable", "off", STRING),
   SB_OPT("thread-stack-size", "size of stack per thread", "64K", SIZE),
+  SB_OPT("thread-init-timeout", "wait time in seconds for worker threads to initialize", "30", INT),
   SB_OPT("rate", "average transactions rate. 0 for unlimited rate", "0", INT),
   SB_OPT("report-interval", "periodically report intermediate statistics with "
          "a specified interval in seconds. 0 disables intermediate reports",
@@ -115,10 +116,9 @@ sb_arg_t general_args[] =
   SB_OPT("help", "print help and exit", "off", BOOL),
   SB_OPT("version", "print version and exit", "off", BOOL),
   SB_OPT("config-file", "File containing command line options", NULL, FILE),
-  SB_OPT("tx-rate", "deprecated alias for --rate", "0", INT),
-  SB_OPT("max-requests", "deprecated alias for --events", "0", INT),
-  SB_OPT("max-time", "deprecated alias for --time", "0", INT),
-  SB_OPT("num-threads", "deprecated alias for --threads", "1", INT),
+  SB_OPT("luajit-cmd", "perform LuaJIT control command. This option is "
+         "equivalent to 'luajit -j'. See LuaJIT documentation for more "
+         "information", NULL, STRING),
 
   SB_OPT_END
 };
@@ -131,16 +131,22 @@ sb_globals_t     sb_globals;
 sb_test_t        *current_test;
 
 /* Barrier to ensure we start the benchmark run when all workers are ready */
-static sb_barrier_t thread_start_barrier;
+static sb_barrier_t worker_barrier;
+
+/* Wait at most this number of seconds for worker threads to initialize */
+static int thread_init_timeout;
+
+/* Barrier to signal reporting threads */
+static sb_barrier_t report_barrier;
 
 /* structures to handle queue of events, needed for tx_rate mode */
 static pthread_mutex_t    queue_mutex;
 static pthread_cond_t     queue_cond;
-static uint64_t           queue_array[MAX_QUEUE_LEN] CK_CC_CACHELINE;
-static ck_ring_buffer_t   queue_ring_buffer[MAX_QUEUE_LEN] CK_CC_CACHELINE;
-static ck_ring_t          queue_ring CK_CC_CACHELINE;
+static CK_CC_CACHELINE uint64_t queue_array[MAX_QUEUE_LEN];
+static CK_CC_CACHELINE ck_ring_buffer_t   queue_ring_buffer[MAX_QUEUE_LEN];
+static CK_CC_CACHELINE ck_ring_t          queue_ring ;
 
-static int report_thread_created CK_CC_CACHELINE;
+static CK_CC_CACHELINE int report_thread_created;
 static int checkpoints_thread_created;
 static int eventgen_thread_created;
 
@@ -151,11 +157,11 @@ static sb_timer_t *timers;
 static sb_timer_t *timers_copy;
 
 /* Global execution timer */
-sb_timer_t      sb_exec_timer CK_CC_CACHELINE;
+CK_CC_CACHELINE sb_timer_t      sb_exec_timer;
 
 /* timers for intermediate/checkpoint reports */
-sb_timer_t sb_intermediate_timer CK_CC_CACHELINE;
-sb_timer_t sb_checkpoint_timer   CK_CC_CACHELINE;
+CK_CC_CACHELINE sb_timer_t sb_intermediate_timer;
+CK_CC_CACHELINE sb_timer_t sb_checkpoint_timer;
 
 TLS int sb_tls_thread_id;
 
@@ -171,7 +177,7 @@ static void sigalrm_thread_init_timeout_handler(int sig)
 
   log_text(LOG_FATAL,
            "Worker threads failed to initialize within %u seconds!",
-           THREAD_INIT_TIMEOUT);
+           thread_init_timeout);
 
   exit(2);
 }
@@ -199,14 +205,17 @@ static void report_get_common_stat(sb_stat_t *stat, sb_counters_t cnt)
 
   stat->threads_running = sb_globals.threads_running;
 
-  stat->events     = cnt[SB_CNT_EVENT];
-  stat->reads      = cnt[SB_CNT_READ];
-  stat->writes     = cnt[SB_CNT_WRITE];
-  stat->other      = cnt[SB_CNT_OTHER];
-  stat->errors     = cnt[SB_CNT_ERROR];
-  stat->reconnects = cnt[SB_CNT_RECONNECT];
+  stat->events =        cnt[SB_CNT_EVENT];
+  stat->reads =         cnt[SB_CNT_READ];
+  stat->writes =        cnt[SB_CNT_WRITE];
+  stat->other =         cnt[SB_CNT_OTHER];
+  stat->errors =        cnt[SB_CNT_ERROR];
+  stat->reconnects =    cnt[SB_CNT_RECONNECT];
+  stat->bytes_read =    cnt[SB_CNT_BYTES_READ];
+  stat->bytes_written = cnt[SB_CNT_BYTES_WRITTEN];
 
-  stat->time_total = NS2SEC(sb_timer_value(&sb_exec_timer));
+  stat->time_total = NS2SEC(sb_timer_value(&sb_exec_timer)) -
+    sb_globals.warmup_time;
 }
 
 
@@ -279,8 +288,10 @@ void sb_report_cumulative(sb_stat_t *stat)
   }
 
   log_text(LOG_NOTICE, "");
-  log_text(LOG_NOTICE, "General statistics:");
-  log_text(LOG_NOTICE, "    total time:                          %.4fs",
+  log_text(LOG_NOTICE, "Throughput:");
+  log_text(LOG_NOTICE, "    events/s (eps):                      %.4f",
+           stat->events / stat->time_interval);
+  log_text(LOG_NOTICE, "    time elapsed:                        %.4fs",
            stat->time_total);
   log_text(LOG_NOTICE, "    total number of events:              %" PRIu64,
            stat->events);
@@ -356,30 +367,38 @@ void sb_report_cumulative(sb_stat_t *stat)
   }
 }
 
-static void report_cumulative(void)
+/* Do a checkpoint, i.e. aggregate and reset collected statistics */
+
+static void checkpoint(sb_stat_t *stat)
 {
-  sb_stat_t stat;
-  unsigned i;
   sb_counters_t cnt;
 
   sb_counters_agg_cumulative(cnt);
-  report_get_common_stat(&stat, cnt);
+  report_get_common_stat(stat, cnt);
 
-  stat.latency_pct =
+  stat->time_interval = NS2SEC(sb_timer_current(&sb_checkpoint_timer));
+
+  stat->latency_pct =
     MS2SEC(sb_histogram_get_pct_checkpoint(&sb_latency_histogram,
                                            sb_globals.percentile));
 
-  sb_timer_t t;
-  sb_timer_init(&t);
-
-  const unsigned nthreads = sb_globals.threads;
-
-  /* Atomically reset each timer after copying into its timers_copy slot */
-  for (i = 0; i < nthreads; i++)
+  /* Atomically reset each timer after copying it into its timers_copy slot */
+  for (size_t i = 0; i < sb_globals.threads; i++)
     sb_timer_checkpoint(&timers[i], &timers_copy[i]);
 
-  /* Aggregate temporary timers copy */
-  for(i = 0; i < nthreads; i++)
+}
+
+static void report_cumulative(void)
+{
+  sb_stat_t  stat;
+  sb_timer_t t;
+
+  checkpoint(&stat);
+
+  sb_timer_init(&t);
+
+  /* Aggregate temporary timers copy populated by checkpoint() */
+  for(size_t i = 0; i < sb_globals.threads; i++)
     t = sb_timer_merge(&t, &timers_copy[i]);
 
   /* Calculate aggregate latency values */
@@ -387,8 +406,6 @@ static void report_cumulative(void)
   stat.latency_max = NS2SEC(sb_timer_max(&t));
   stat.latency_avg = NS2SEC(sb_timer_avg(&t));
   stat.latency_sum = NS2SEC(sb_timer_sum(&t));
-
-  stat.time_interval = NS2SEC(sb_timer_current(&sb_checkpoint_timer));
 
   if (current_test && current_test->ops.report_cumulative)
     current_test->ops.report_cumulative(&stat);
@@ -556,15 +573,6 @@ static int parse_general_arguments(int argc, char *argv[])
 
       return 1;
     }
-    else if (!strncmp(argv[i] + 2, "test=", 5))
-    {
-      /* Support the deprecated --test for compatibility reasons */
-      fprintf(stderr,
-              "WARNING: the --test option is deprecated. You can pass a "
-              "script name or path on the command line without any options.\n");
-      parse_option(argv[i] + 2, true);
-      testname = sb_get_value_string("test");
-    }
     else if (!parse_option(argv[i]+2, false))
     {
       /* An option from general_args. Exclude it from future processing */
@@ -592,12 +600,8 @@ static int parse_test_arguments(sb_test_t *test, int argc, char *argv[])
     if (argv[i] == NULL || strncmp(argv[i], "--", 2))
       continue;
 
-    /*
-      At this stage an unrecognized option must throw a error, unless the test
-      defines no options (for compatibility with legacy Lua scripts). In the
-      latter case we just export all unrecognized options as strings.
-    */
-    if (parse_option(argv[i]+2, test->args == NULL))
+    /* At this stage an unrecognized option must throw a error. */
+    if (parse_option(argv[i]+2, false))
     {
       fprintf(stderr, "invalid option: %s\n", argv[i]);
       return 1;
@@ -614,6 +618,9 @@ void print_run_mode(sb_test_t *test)
 {
   log_text(LOG_NOTICE, "Running the test with following options:");
   log_text(LOG_NOTICE, "Number of threads: %d", sb_globals.threads);
+
+  if (sb_globals.warmup_time > 0)
+    log_text(LOG_NOTICE, "Warmup time: %ds", sb_globals.warmup_time);
 
   if (sb_globals.tx_rate > 0)
   {
@@ -665,7 +672,7 @@ void print_run_mode(sb_test_t *test)
   {
     log_text(LOG_NOTICE,
              "Initializing random number generator from current time\n");
-    srandom(time(NULL));
+    srandom((unsigned int)time(NULL));
   }
 
   if (sb_globals.force_shutdown)
@@ -694,9 +701,9 @@ bool sb_more_events(int thread_id)
   }
 
   /* Check if we have a limit on the number of events */
-  if (sb_globals.max_events > 0 &&
-      SB_UNLIKELY(ck_pr_faa_64(&sb_globals.nevents, 1) >=
-                  sb_globals.max_events))
+  const uint64_t max_events = ck_pr_load_64(&sb_globals.max_events);
+  if (max_events > 0 &&
+      SB_UNLIKELY(ck_pr_faa_64(&sb_globals.nevents, 1) >= max_events))
   {
     log_text(LOG_INFO, "Event limit exceeded, exiting...");
     return false;
@@ -811,14 +818,14 @@ static void *worker_thread(void *arg)
     log_text(LOG_DEBUG, "Worker thread (#%d) failed to initialize!", thread_id);
     sb_globals.error = 1;
     /* Avoid blocking the main thread */
-    sb_barrier_wait(&thread_start_barrier);
+    sb_barrier_wait(&worker_barrier);
     return NULL;
   }
 
   log_text(LOG_DEBUG, "Worker thread (#%d) initialized", thread_id);
 
   /* Wait for other threads to initialize */
-  if (sb_barrier_wait(&thread_start_barrier) < 0)
+  if (sb_barrier_wait(&worker_barrier) < 0)
     return NULL;
 
   if (test->ops.thread_run != NULL)
@@ -842,9 +849,9 @@ static void *worker_thread(void *arg)
 
 /* Generate exponentially distributed number with a given Lambda */
 
-static inline double sb_rand_exp(double lambda)
+static inline uint64_t sb_rand_exp(double lambda)
 {
-  return -lambda * log(1 - sb_rand_uniform_double());
+  return (uint64_t)(-lambda * log(1 - sb_rand_uniform_double()));
 }
 
 static void *eventgen_thread_proc(void *arg)
@@ -861,14 +868,14 @@ static void *eventgen_thread_proc(void *arg)
   if (pthread_mutex_init(&queue_mutex, NULL) ||
       pthread_cond_init(&queue_cond, NULL))
   {
-    sb_barrier_wait(&thread_start_barrier);
+    sb_barrier_wait(&worker_barrier);
     return NULL;
   }
 
   log_text(LOG_DEBUG, "Event generating thread started");
 
-  /* Wait for other threads to initialize */
-  if (sb_barrier_wait(&thread_start_barrier) < 0)
+  /* Wait for the worker threads to initialize */
+  if (sb_barrier_wait(&worker_barrier) < 0)
     return NULL;
 
   eventgen_thread_created = 1;
@@ -944,8 +951,8 @@ static void *report_thread_proc(void *arg)
 
   log_text(LOG_DEBUG, "Reporting thread started");
 
-  /* Wait for other threads to initialize */
-  if (sb_barrier_wait(&thread_start_barrier) < 0)
+  /* Wait for the signal from the main thread to start reporting */
+  if (sb_barrier_wait(&report_barrier) < 0)
     return NULL;
 
   report_thread_created = 1;
@@ -995,8 +1002,8 @@ static void *checkpoints_thread_proc(void *arg)
 
   log_text(LOG_DEBUG, "Checkpoints report thread started");
 
-  /* Wait for other threads to initialize */
-  if (sb_barrier_wait(&thread_start_barrier) < 0)
+  /* Wait for the signal from the main thread to start reporting */
+  if (sb_barrier_wait(&report_barrier) < 0)
     return NULL;
 
   checkpoints_thread_created = 1;
@@ -1054,6 +1061,7 @@ static int run_test(sb_test_t *test)
   pthread_t    checkpoints_thread;
   pthread_t    eventgen_thread;
   unsigned int barrier_threads;
+  uint64_t     old_max_events = 0;
 
   /* initialize test */
   if (test->ops.init != NULL && test->ops.init() != 0)
@@ -1075,18 +1083,28 @@ static int run_test(sb_test_t *test)
 
   sb_globals.threads_running = 0;
 
-  /* Calculate the required number of threads for the start barrier */
-  barrier_threads = 1 + sb_globals.threads +
-    (sb_globals.report_interval > 0) +
-    (sb_globals.tx_rate > 0) +
-    (sb_globals.n_checkpoints > 0);
+  /* Calculate the required number of threads for the worker start barrier */
+  barrier_threads = 1 /* main thread */ + sb_globals.threads +
+    (sb_globals.tx_rate > 0) /* event generation thread */;
 
-  /* Initialize the start barrier */
-  if (sb_barrier_init(&thread_start_barrier, barrier_threads,
-                      threads_started_callback, NULL)) {
+  if (sb_barrier_init(&worker_barrier, barrier_threads,
+                      threads_started_callback, NULL))
+  {
     log_errno(LOG_FATAL, "sb_barrier_init() failed");
     return 1;
   }
+
+  /* Calculate the required number of threads for the report start barrier */
+  barrier_threads = 1 /* main thread */ +
+    (sb_globals.report_interval > 0) /* intermediate reports thread */ +
+    (sb_globals.n_checkpoints > 0) /* checkpoint reports thread */;
+
+  if (sb_barrier_init(&report_barrier, barrier_threads, NULL, NULL))
+  {
+    log_errno(LOG_FATAL, "sb_barrier_init() failed");
+    return 1;
+  }
+
 
   if (sb_globals.report_interval > 0)
   {
@@ -1130,12 +1148,19 @@ static int run_test(sb_test_t *test)
   /* Exit with an error if thread initialization timeout expires */
   signal(SIGALRM, sigalrm_thread_init_timeout_handler);
 
-  alarm(THREAD_INIT_TIMEOUT);
+  alarm(thread_init_timeout);
 #endif
 
-  if (sb_barrier_wait(&thread_start_barrier) < 0)
+  if (sb_globals.warmup_time > 0)
   {
-    log_text(LOG_FATAL, "Thread initialization failed!");
+    /* Disable the max_events limit for the warmup stage */
+    old_max_events = sb_globals.max_events;
+    sb_globals.max_events = 0;
+  }
+
+  if (sb_barrier_wait(&worker_barrier) < 0)
+  {
+    log_text(LOG_FATAL, "Threads initialization failed!");
     return 1;
   }
 
@@ -1147,9 +1172,31 @@ static int run_test(sb_test_t *test)
     /* Set the alarm to force shutdown */
     signal(SIGALRM, sigalrm_forced_shutdown_handler);
 
-    alarm(NS2SEC(sb_globals.max_time_ns) + sb_globals.timeout);
+    alarm((unsigned int)NS2SEC(sb_globals.max_time_ns) + sb_globals.timeout);
   }
 #endif
+
+  if (sb_globals.warmup_time > 0)
+  {
+    log_text(LOG_NOTICE, "Warming up for %d seconds...\n",
+             sb_globals.warmup_time);
+
+    usleep(sb_globals.warmup_time * 1000000);
+
+    /* Re-enable the max_events limit, if it was set */
+    ck_pr_store_64(&sb_globals.max_events, old_max_events);
+
+    /* Perform a checkpoint to reset previously collected stats */
+    sb_stat_t stat;
+    checkpoint(&stat);
+  }
+
+  /* Signal the report threads to start reporting */
+  if (sb_barrier_wait(&report_barrier) < 0)
+  {
+    log_text(LOG_FATAL, "Failed to signal reporting threads");
+    return 1;
+  }
 
   if ((err = sb_thread_join_workers()))
     return err;
@@ -1251,38 +1298,28 @@ static int init(void)
   sb_list_item_t    *pos_val;
   value_t           *val;
 
-  sb_globals.threads = sb_get_value_int("num-threads");
-  if (sb_globals.threads > 1)
-  {
-    log_text(LOG_WARNING, "--num-threads is deprecated, use --threads instead");
-    sb_opt_copy("threads", "num-threads");
-  }
-  else
-    sb_globals.threads = sb_get_value_int("threads");
+  sb_globals.threads = sb_get_value_int("threads");
 
+  thread_init_timeout = sb_get_value_int("thread-init-timeout");
+  
   if (sb_globals.threads <= 0)
   {
     log_text(LOG_FATAL, "Invalid value for --threads: %d.\n",
              sb_globals.threads);
     return 1;
   }
-  sb_globals.max_events = sb_get_value_int("max-requests");
-  if (sb_globals.max_events > 0)
-  {
-    log_text(LOG_WARNING, "--max-requests is deprecated, use --events instead");
-    sb_opt_copy("events", "max-requests");
-  }
-  else
-    sb_globals.max_events = sb_get_value_int("events");
 
-  int max_time = sb_get_value_int("max-time");
-  if (max_time > 0)
+  sb_globals.max_events = sb_get_value_int("events");
+
+  sb_globals.warmup_time = sb_get_value_int("warmup-time");
+  if (sb_globals.warmup_time < 0)
   {
-    log_text(LOG_WARNING, "--max-time is deprecated, use --time instead");
-    sb_opt_copy("time", "max-time");
+    log_text(LOG_FATAL, "Invalid value for --warmup-time: %d.\n",
+             sb_globals.warmup_time);
+    return 1;
   }
-  else
-    max_time = sb_get_value_int("time");
+
+  int max_time = sb_get_value_int("time");
 
   sb_globals.max_time_ns = SEC2NS(max_time);
 
@@ -1292,12 +1329,18 @@ static int init(void)
 
   if (sb_globals.max_time_ns > 0)
   {
+    /* Adjust the time limit if warmup time has been requested */
+    if (sb_globals.warmup_time > 0)
+    {
+      sb_globals.max_time_ns += SEC2NS(sb_globals.warmup_time);
+    }
+
     /* Parse the --forced-shutdown value */
     tmp = sb_get_value_string("forced-shutdown");
     if (tmp == NULL)
     {
       sb_globals.force_shutdown = 1;
-      sb_globals.timeout = NS2SEC(sb_globals.max_time_ns) / 20;
+      sb_globals.timeout = (unsigned int)NS2SEC(sb_globals.max_time_ns) / 20;
     }
     else if (strcasecmp(tmp, "off"))
     {
@@ -1338,14 +1381,7 @@ static int init(void)
     return 1;
   }
 
-  sb_globals.tx_rate = sb_get_value_int("tx-rate");
-  if (sb_globals.tx_rate > 0)
-  {
-    log_text(LOG_WARNING, "--tx-rate is deprecated, use --rate instead");
-    sb_opt_copy("rate", "tx-rate");
-  }
-  else
-    sb_globals.tx_rate = sb_get_value_int("rate");
+  sb_globals.tx_rate = sb_get_value_int("rate");
 
   sb_globals.report_interval = sb_get_value_int("report-interval");
 
@@ -1392,14 +1428,33 @@ static int init(void)
   for (unsigned i = 0; i < sb_globals.threads; i++)
     sb_timer_init(&timers[i]);
 
+  /* LuaJIT commands */
+  sb_globals.luajit_cmd = sb_get_value_string("luajit-cmd");
+
   return 0;
 }
 
+
+/* OS specific initialization */
+static inline void os_init(void)
+{
+#ifdef _WIN32
+  /*
+    lua is using C runtime, and is opens multiple files simultaneously
+    in different threads. Allow maximum possible number of open files.
+  */
+  _setmaxstdio(8192);
+  /* improve timer resolution for Sleep() */
+  timeBeginPeriod(1);
+#endif
+}
 
 int main(int argc, char *argv[])
 {
   sb_test_t *test = NULL;
   int rc;
+
+  os_init();
 
   sb_globals.argc = argc;
   sb_globals.argv = malloc(argc * sizeof(char *));
@@ -1559,8 +1614,8 @@ end:
 
   sb_thread_done();
 
-  free(timers);
-  free(timers_copy);
+  sb_free_memaligned(timers);
+  sb_free_memaligned(timers_copy);
 
   free(sb_globals.argv);
 

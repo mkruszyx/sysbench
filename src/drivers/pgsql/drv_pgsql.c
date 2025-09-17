@@ -33,7 +33,7 @@
 #include "db_driver.h"
 #include "sb_rand.h"
 
-#define xfree(ptr) ({ if (ptr) free((void *)ptr); ptr = NULL; })
+#define xfree(ptr) do{ if (ptr) free((void *)ptr); ptr = NULL; }while(0)
 
 /* Maximum length of text representation of bind parameters */
 #define MAX_PARAM_LENGTH 256UL
@@ -47,6 +47,7 @@ static sb_arg_t pgsql_drv_args[] =
   SB_OPT("pgsql-user", "PostgreSQL user", "sbtest", STRING),
   SB_OPT("pgsql-password", "PostgreSQL password", "", STRING),
   SB_OPT("pgsql-db", "PostgreSQL database name", "sbtest", STRING),
+  SB_OPT("pgsql-sslmode", "PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)", "prefer", STRING),
 
   SB_OPT_END
 };
@@ -116,6 +117,7 @@ static int pgsql_drv_init(void);
 static int pgsql_drv_describe(drv_caps_t *);
 static int pgsql_drv_connect(db_conn_t *);
 static int pgsql_drv_disconnect(db_conn_t *);
+static int pgsql_drv_reconnect(db_conn_t *);
 static int pgsql_drv_prepare(db_stmt_t *, const char *, size_t);
 static int pgsql_drv_bind_param(db_stmt_t *, db_bind_t *, size_t);
 static int pgsql_drv_bind_result(db_stmt_t *, db_bind_t *, size_t);
@@ -141,6 +143,7 @@ static db_driver_t pgsql_driver =
     .describe = pgsql_drv_describe,
     .connect = pgsql_drv_connect,
     .disconnect = pgsql_drv_disconnect,
+    .reconnect = pgsql_drv_reconnect,
     .prepare = pgsql_drv_prepare,
     .bind_param = pgsql_drv_bind_param,
     .bind_result = pgsql_drv_bind_result,
@@ -178,7 +181,15 @@ int pgsql_drv_init(void)
   args.port = sb_get_value_string("pgsql-port");
   args.user = sb_get_value_string("pgsql-user");
   args.password = sb_get_value_string("pgsql-password");
-  args.db = sb_get_value_string("pgsql-db");
+
+  char * dbname = sb_get_value_string("pgsql-db");
+  char * sslmode = sb_get_value_string("pgsql-sslmode");
+
+  args.db = malloc(strlen("dbname= sslmode=") +
+                   strlen(dbname) +
+                   strlen(sslmode) +
+                   1);
+  sprintf(args.db, "dbname=%s sslmode=%s", dbname, sslmode);
 
   use_ps = 0;
   pgsql_drv_caps.prepared_statements = 1;
@@ -271,6 +282,22 @@ int pgsql_drv_disconnect(db_conn_t *sb_conn)
     PQfinish(con);
 
   return 0;
+}
+
+/* Disconnect from database */
+
+int pgsql_drv_reconnect(db_conn_t *sb_conn)
+{
+  if (pgsql_drv_disconnect(sb_conn))
+    return DB_ERROR_FATAL;
+
+  while (pgsql_drv_connect(sb_conn))
+  {
+    if (sb_globals.error)
+      return DB_ERROR_FATAL;
+  }
+
+  return DB_ERROR_IGNORABLE;
 }
 
 
@@ -405,7 +432,7 @@ int pgsql_drv_bind_param(db_stmt_t *stmt, db_bind_t *params, size_t len)
   if (stmt->bound_param == NULL)
     return 1;
   memcpy(stmt->bound_param, params, len * sizeof(db_bind_t));
-  stmt->bound_param_len = len;
+  stmt->bound_param_len = (unsigned int)len;
  
   if (stmt->emulated)
     return 0;
@@ -729,12 +756,12 @@ int pgsql_drv_fetch_row(db_result_t *rs, db_row_t *row)
       PQgetvalue() returns an empty string, not a NULL value for a NULL
       field. Callers of this function expect a NULL pointer in this case.
     */
-    if (PQgetisnull(rs->ptr, rownum, i))
+    if (PQgetisnull(rs->ptr, (int)rownum, i))
       row->values[i].ptr = NULL;
     else
     {
-      row->values[i].len = PQgetlength(rs->ptr, rownum, i);
-      row->values[i].ptr = PQgetvalue(rs->ptr, rownum, i);
+      row->values[i].len = PQgetlength(rs->ptr, (int)rownum, i);
+      row->values[i].ptr = PQgetvalue(rs->ptr, (int)rownum, i);
     }
   }
 

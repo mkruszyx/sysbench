@@ -1,5 +1,5 @@
 /* Copyright (C) 2004 MySQL AB
-   Copyright (C) 2004-2017 Alexey Kopytov <akopytov@gmail.com>
+   Copyright (C) 2004-2018 Alexey Kopytov <akopytov@gmail.com>
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +18,6 @@
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
-#endif
-#ifdef _WIN32
-# include "sb_win.h"
 #endif
 
 #ifdef HAVE_MATH_H
@@ -97,6 +94,9 @@ sb_event_t cpu_next_event(int thread_id)
   return req;
 }
 
+/* helps to avoid compilers optimizing cpu_execute_event() away */
+static TLS unsigned long long thread_count_primes;
+
 int cpu_execute_event(sb_event_t *r, int thread_id)
 {
   unsigned long long c;
@@ -118,7 +118,7 @@ int cpu_execute_event(sb_event_t *r, int thread_id)
     if (l > t )
       n++; 
   }
-
+  thread_count_primes= n;
   return 0;
 }
 
