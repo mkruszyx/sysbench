@@ -18,7 +18,7 @@ endif()
 
 project(
   sysbench
-  VERSION "1.1.0"
+  VERSION "1.0.20"
   LANGUAGES C)
 
 # Set default build type, if none is given

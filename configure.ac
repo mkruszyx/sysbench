@@ -1,7 +1,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.63)
-AC_INIT([sysbench],[1.1.0],[https://github.com/akopytov/sysbench/issues],
+AC_INIT([sysbench],[1.0.20],[https://github.com/akopytov/sysbench/issues],
         [sysbench], [https://github.com/akopytov/sysbench])
 AC_CONFIG_AUX_DIR([config])
 
@@ -28,7 +28,7 @@ AC_CANONICAL_TARGET
 
 CFLAGS=${SAVE_CFLAGS}
 CXXFLAGS=${SAVE_CXXFLAGS}
- 
+
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 AC_CONFIG_SRCDIR([src/sysbench.c])
 AC_CONFIG_HEADER([config/config.h])
@@ -151,8 +151,8 @@ AC_ARG_ENABLE(largefile,
 )
 
 # For SHM_HUGETLB on Linux
-AC_CHECK_DECLS(SHM_HUGETLB, 
-    AC_DEFINE([HAVE_LARGE_PAGES], [1], 
+AC_CHECK_DECLS(SHM_HUGETLB,
+    AC_DEFINE([HAVE_LARGE_PAGES], [1],
               [Define if you have large pages support])
     AC_DEFINE([HUGETLB_USE_PROC_MEMINFO], [1],
               [Define if /proc/meminfo shows the huge page size (Linux only)])
@@ -252,7 +252,7 @@ AC_CHECK_SIZEOF(bool,,
 AC_FUNC_MMAP
 AC_FUNC_STRERROR_R
 
-AC_SEARCH_LIBS([clock_gettime], [rt]) 
+AC_SEARCH_LIBS([clock_gettime], [rt])
 
 save_CFLAGS="$CFLAGS"
 CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
@@ -278,7 +278,7 @@ thr_setconcurrency \
 valloc \
 ])
 
-AC_CHECK_FUNC(pthread_once, , 
+AC_CHECK_FUNC(pthread_once, ,
               AC_MSG_ERROR([*** pthread_once() is not available on this platform ***])
 )
 
