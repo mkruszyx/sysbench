@@ -1,6 +1,7 @@
 # install-sysbench.ps1
 # Installs the unpacked payload to "C:\sysbench"
-# Adds C:\sysbench\bin to PATH (Machine if possible, else User). No admin required for install path.
+# Adds C:\sysbench\bin to PATH (Machine if possible, else User).
+# Repairs corrupted PATH strings (e.g. "...WindowsAppsC:\sysbench\bin...") and de-dupes sysbench entries.
 
 $ErrorActionPreference = 'Stop'
 
@@ -14,13 +15,16 @@ Write-Host "Destination: $dest"
 # ---- Create destination and copy payload (exclude installer scripts)
 if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
 
-# Use robocopy; ignore its nonzero 'success' exit codes
+# Use robocopy; treat exit codes 0..7 as success
 $rcArgs = @(
   "`"$src`"", "`"$dest`"", "/E", "/R:3", "/W:1",
   "/XD", ".git",
   "/XF", "install-sysbench.ps1", "install-sysbench.bat"
 )
-$null = Start-Process -FilePath robocopy -ArgumentList $rcArgs -NoNewWindow -Wait -PassThru
+$rc = Start-Process -FilePath robocopy -ArgumentList $rcArgs -NoNewWindow -Wait -PassThru
+if ($null -ne $rc.ExitCode -and $rc.ExitCode -gt 7) {
+  throw "robocopy failed with exit code $($rc.ExitCode)"
+}
 
 # ---- Sanity check
 $exe = Join-Path $bin 'sysbench.exe'
@@ -30,42 +34,103 @@ if (-not (Test-Path $exe)) {
 }
 
 # ---- PATH helpers
-function Normalize-Path([string]$p) { $p.TrimEnd('\') }
-function Add-ToPath([string]$p, [System.EnvironmentVariableTarget]$scope) {
-  $norm = Normalize-Path $p
-  $cur  = [Environment]::GetEnvironmentVariable('Path', $scope)
-  if ([string]::IsNullOrEmpty($cur)) { $cur = '' }
-  $parts = $cur -split ';' | Where-Object { $_ -and $_.Trim() } | ForEach-Object { Normalize-Path $_ }
-  if ($parts -notcontains $norm) {
-    $new = ($parts + $norm) -join ';'
-    [Environment]::SetEnvironmentVariable('Path', $new, $scope)
-    return $true
+function Normalize-Path([string]$p) {
+  if ([string]::IsNullOrWhiteSpace($p)) { return $null }
+  $p.Trim().Trim('"').TrimEnd('\')
+}
+
+function Repair-PathString([string]$s) {
+  if ([string]::IsNullOrEmpty($s)) { return '' }
+
+  # Insert missing ';' before concatenated drive-letter path:
+  # "...WindowsAppsC:\sysbench\bin" -> "...WindowsApps;C:\sysbench\bin"
+  $s = $s -replace '(?<!^)(?<!;)(?=[A-Za-z]:\\)', ';'
+
+  # Optional: insert missing ';' before concatenated UNC path (rare)
+  $s = $s -replace '(?<!^)(?<!;)(?=\\\\)', ';'
+
+  # Collapse repeated separators and trim edges
+  $s = $s -replace ';{2,}', ';'
+  $s.Trim(';')
+}
+
+function Get-PathParts([string]$raw) {
+  $fixed = Repair-PathString $raw
+  $fixed -split ';' |
+    ForEach-Object { Normalize-Path $_ } |
+    Where-Object { $_ }
+}
+
+function Set-PathParts([string[]]$parts, [System.EnvironmentVariableTarget]$scope) {
+  [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), $scope)
+}
+
+function Dedupe-PathParts([string[]]$parts) {
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($p in $parts) {
+    if ($seen.Add($p)) { [void]$out.Add($p) }
   }
-  return $false
+  ,$out.ToArray()
 }
 
-# ---- Try Machine PATH; if denied, fall back to User PATH
+function Ensure-SinglePathEntry(
+  [string]$entry,
+  [System.EnvironmentVariableTarget]$scope,
+  [bool]$AddEntry
+) {
+  $normEntry = Normalize-Path $entry
+  $curRaw    = [Environment]::GetEnvironmentVariable('Path', $scope)
+  $parts     = Get-PathParts $curRaw
+
+  # Remove ALL sysbench bin occurrences that may be embedded in a corrupted token
+  # (e.g. "C:\sysbench\binC:\sysbench\bin..." or "...WindowsAppsC:\sysbench\bin...")
+  # First repair string to split correctly; then remove exact matches.
+  $parts = $parts | Where-Object { $_ -ne $normEntry }
+
+  # Remove obvious broken/truncated sysbench fragments if any (example: "C:\sysbench\binC")
+  $parts = $parts | Where-Object { $_ -notmatch '^(?i)C:\\sysbench\\bin[A-Za-z]$' }
+
+  if ($AddEntry) { $parts += $normEntry }
+
+  $unique = Dedupe-PathParts $parts
+  Set-PathParts $unique $scope
+}
+
+# ---- PATH policy:
+# - Prefer Machine PATH if possible
+# - If Machine contains sysbench already, remove sysbench from User (avoid duplicates across scopes)
+# - If we successfully add to Machine, also remove from User
+# - Otherwise add to User
+$normBin = Normalize-Path $bin
 $addedWhere = $null
-try {
-  if (Add-ToPath $bin ([EnvironmentVariableTarget]::Machine)) { $addedWhere = 'Machine' }
-} catch { }
 
-if (-not $addedWhere) {
-  if (Add-ToPath $bin ([EnvironmentVariableTarget]::User)) { $addedWhere = 'User' }
+$machineParts = Get-PathParts ([Environment]::GetEnvironmentVariable('Path', [EnvironmentVariableTarget]::Machine))
+$machineHas   = $machineParts -contains $normBin
+
+if ($machineHas) {
+  try { Ensure-SinglePathEntry -entry $bin -scope ([EnvironmentVariableTarget]::User) -AddEntry:$false } catch { }
+  $addedWhere = 'Machine (already present); cleaned User'
+} else {
+  try {
+    Ensure-SinglePathEntry -entry $bin -scope ([EnvironmentVariableTarget]::Machine) -AddEntry:$true
+    try { Ensure-SinglePathEntry -entry $bin -scope ([EnvironmentVariableTarget]::User) -AddEntry:$false } catch { }
+    $addedWhere = 'Machine'
+  } catch {
+    Ensure-SinglePathEntry -entry $bin -scope ([EnvironmentVariableTarget]::User) -AddEntry:$true
+    $addedWhere = 'User'
+  }
 }
 
-# Ensure it's available in THIS process immediately
-if (-not ($env:Path -split ';' | ForEach-Object { Normalize-Path $_ } | Where-Object { $_ -eq (Normalize-Path $bin) })) {
-  $env:Path = "$env:Path;$bin"
-}
+# ---- Ensure it's available in THIS process immediately (repair/dedupe session PATH too)
+$sessionParts = Get-PathParts $env:Path | Where-Object { $_ -ne $normBin }
+$sessionParts += $normBin
+$sessionParts = Dedupe-PathParts $sessionParts
+$env:Path = ($sessionParts -join ';')
 
 # ---- Verify
 & $exe --version
 
-if ($addedWhere) {
-  Write-Host "Added to $addedWhere PATH: $bin"
-} else {
-  Write-Host "PATH unchanged (already contained): $bin"
-}
 Write-Host "sysbench installed to: $dest"
+Write-Host "PATH updated: $addedWhere -> $bin"
 exit 0
